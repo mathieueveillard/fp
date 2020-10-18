@@ -1,89 +1,157 @@
-function lens(getter, setter) {
+interface Getter<Raw, Wrapped> {
+  (w: Wrapped): Raw;
+}
+
+interface Setter<Raw, Wrapped> {
+  (r: Raw, w: Wrapped): Wrapped;
+}
+
+interface Lens<R, W> {
+  get: Getter<R, W>;
+  set: Setter<R, W>;
+}
+
+function lens<R, W>(get: Getter<R, W>, set: Setter<R, W>): Lens<R, W> {
   return {
-    getter,
-    setter
+    get,
+    set
   };
 }
 
-function view(lens, object) {
-  return lens.getter(object);
-}
-
-function set(lens, value, object) {
-  return lens.setter(value, object);
-}
-
-function compose(lens1, lens2) {
+function compose<U, V, W>(lens2: Lens<V, W>, lens1: Lens<U, V>): Lens<U, W> {
   return {
-    getter: object => view(lens2, view(lens1, object)),
-    setter: (value, object) => set(lens1, set(lens2, value, view(lens2, object)), object) // Here is the trick!
+    get: object => lens1.get(lens2.get(object)),
+    set: (value, object) => lens2.set(lens1.set(value, lens2.get(object)), object)
   };
 }
 
 describe("Lenses", function() {
+  type TemperatureInCelcius = number;
+  type TemperatureInFahrenheit = number;
+  type WindInMetersPerSecond = number;
+
+  interface StandardWeather {
+    cTemperature: TemperatureInCelcius;
+    wind: WindInMetersPerSecond;
+  }
+
+  interface USWeather {
+    fTemperature: TemperatureInFahrenheit;
+    wind: WindInMetersPerSecond;
+  }
+
   it("A lens should allow to extract data from state and backwards", function() {
     // GIVEN
-    const weather = {
-      temperature: 17,
-      wind: 0
-    };
-
-    function getTemperature({ temperature }) {
-      return temperature;
+    function getTemperature({ cTemperature }: StandardWeather): TemperatureInCelcius {
+      return cTemperature;
     }
 
-    function setTemperature(temperature, object) {
+    function setTemperature(cTemperature: TemperatureInCelcius, weather: StandardWeather): StandardWeather {
       return {
-        ...object,
-        temperature
+        ...weather,
+        cTemperature
       };
     }
 
-    const temperatureLens = lens(getTemperature, setTemperature);
+    const temperatureLens: Lens<TemperatureInCelcius, StandardWeather> = lens(getTemperature, setTemperature);
+
+    const weather: StandardWeather = {
+      cTemperature: 17,
+      wind: 0
+    };
 
     // WHEN, THEN
-    const temperature = view(temperatureLens, weather);
-    expect(temperature).toEqual(17);
-
-    // WHEN, THEN
-    const updatedWeather = set(temperatureLens, 18, weather);
-    expect(updatedWeather).toEqual({ temperature: 18, wind: 0 });
+    expect(temperatureLens.get(weather)).toEqual(17);
+    expect(temperatureLens.set(18, weather)).toEqual({ cTemperature: 18, wind: 0 });
   });
 
   it("should allow to compose lenses", function() {
     // GIVEN
-    const weather = {
-      temperatureInC: 0,
-      wind: 0
-    };
-
-    function getTemperature({ temperatureInC }) {
-      return temperatureInC;
+    function getTemperature({ cTemperature }: StandardWeather): TemperatureInCelcius {
+      return cTemperature;
     }
 
-    function setTemperature(temperatureInC, object) {
+    function setTemperature(cTemperature: TemperatureInCelcius, weather: StandardWeather): StandardWeather {
       return {
-        ...object,
-        temperatureInC
+        ...weather,
+        cTemperature
       };
     }
 
-    function cToF(temperatureInCelsius) {
-      return Math.round((temperatureInCelsius * 9) / 5 + 32);
+    const celciusTemperatureLens: Lens<TemperatureInCelcius, StandardWeather> = lens(getTemperature, setTemperature);
+
+    // https://en.wikipedia.org/wiki/Fahrenheit
+
+    function celciusToFahrenheit(cTemperature: TemperatureInCelcius): TemperatureInFahrenheit {
+      return Math.round((cTemperature * 9) / 5 + 32);
     }
 
-    function fToC(temperatureInFahrenheit) {
-      return Math.round(((temperatureInFahrenheit - 32) * 5) / 9);
+    function fahrenheitToCelcius(fTemperature: TemperatureInFahrenheit): TemperatureInCelcius {
+      return Math.round(((fTemperature - 32) * 5) / 9);
     }
 
-    const fahrenheitTemperatureLens = compose(lens(getTemperature, setTemperature), lens(cToF, fToC));
+    const fahrenheitToCelciusLens: Lens<TemperatureInFahrenheit, TemperatureInCelcius> = lens(
+      celciusToFahrenheit,
+      fahrenheitToCelcius
+    );
+
+    const fahrenheitTemperatureLens: Lens<TemperatureInFahrenheit, StandardWeather> = compose(
+      celciusTemperatureLens,
+      fahrenheitToCelciusLens
+    );
+
+    const standardWeather: StandardWeather = {
+      cTemperature: 0,
+      wind: 0
+    };
 
     // WHEN, THEN
-    const temperatureInF = view(fahrenheitTemperatureLens, weather);
-    expect(temperatureInF).toEqual(32);
+    expect(fahrenheitTemperatureLens.get(standardWeather)).toEqual(32);
+    expect(fahrenheitTemperatureLens.set(50, standardWeather)).toEqual({ cTemperature: 10, wind: 0 });
+  });
 
-    // WHEN, THEN
-    const updatedWeather = set(fahrenheitTemperatureLens, 50, weather);
-    expect(temperatureInF).toEqual({ temperatureInC: 10, wind: 0 });
+  it("House of Cards", function() {
+    type FirstName = string;
+    type LastName = string;
+
+    interface Name {
+      firstName: FirstName;
+      lastName: LastName;
+    }
+
+    type DateOfBirth = Date;
+
+    interface Identity {
+      name: Name;
+      dateOfBirth: DateOfBirth;
+    }
+
+    const nameLens = lens<Name, Identity>(
+      ({ name }) => name,
+      (name, identity) => ({ ...identity, name })
+    );
+
+    const firstNameLens = lens<FirstName, Name>(
+      ({ firstName }) => firstName,
+      (firstName, name) => ({ ...name, firstName })
+    );
+
+    const firstNameFromIdentityLens = compose(nameLens, firstNameLens);
+
+    const identity: Identity = {
+      name: {
+        firstName: "Francis",
+        lastName: "Underwood"
+      },
+      dateOfBirth: new Date("November 5, 1959")
+    };
+    expect(firstNameFromIdentityLens.get(identity)).toEqual("Francis");
+    expect(firstNameFromIdentityLens.set("Frank", identity)).toEqual({
+      name: {
+        firstName: "Frank",
+        lastName: "Underwood"
+      },
+      dateOfBirth: new Date("November 5, 1959")
+    });
   });
 });
